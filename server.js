@@ -59,6 +59,7 @@ app.post("/uploadAudio", upload.single("audio"), (req, res) => {
         const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
         res.json({ url: fileUrl });
     } catch (err) {
+        console.log("Upload error:", err);
         res.status(500).json({ message: "Upload failed" });
     }
 });
@@ -66,6 +67,8 @@ app.post("/uploadAudio", upload.single("audio"), (req, res) => {
 // Signup
 app.post("/signup", async (req, res) => {
     try {
+        console.log("Signup request body:", req.body);
+
         const { email, password } = req.body;
 
         if (!email || !password) {
@@ -80,16 +83,20 @@ app.post("/signup", async (req, res) => {
         const newUser = new User({ email, password });
         await newUser.save();
 
+        console.log("User created successfully:", email);
         res.json({ message: "User created successfully" });
 
     } catch (error) {
-        res.status(500).json({ message: "Error creating user" });
+        console.log("Signup error:", error);
+        res.status(500).json({ message: error.message || "Error creating user" });
     }
 });
 
 // Login
 app.post("/login", async (req, res) => {
     try {
+        console.log("Login request body:", req.body);
+
         const { email, password } = req.body;
 
         const user = await User.findOne({ email, password });
@@ -101,7 +108,8 @@ app.post("/login", async (req, res) => {
         }
 
     } catch (error) {
-        res.status(500).json({ message: "Error logging in" });
+        console.log("Login error:", error);
+        res.status(500).json({ message: error.message || "Error logging in" });
     }
 });
 
@@ -123,7 +131,8 @@ app.post("/sendMessage", async (req, res) => {
         res.json({ message: "Message sent" });
 
     } catch (error) {
-        res.status(500).json({ message: "Error sending message" });
+        console.log("Send message error:", error);
+        res.status(500).json({ message: error.message || "Error sending message" });
     }
 });
 
@@ -133,7 +142,8 @@ app.get("/messages", async (req, res) => {
         const messages = await Message.find().sort({ time: 1 });
         res.json(messages);
     } catch (error) {
-        res.status(500).json({ message: "Error fetching messages" });
+        console.log("Get messages error:", error);
+        res.status(500).json({ message: error.message || "Error fetching messages" });
     }
 });
 
