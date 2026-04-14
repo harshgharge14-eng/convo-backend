@@ -40,7 +40,11 @@ app.use(cors());
 app.use("/uploads", express.static("uploads"));
 
 // MongoDB connection
-mongoose.connect(process.env.MONGO_URI)
+mongoose.set("bufferCommands", false);
+
+mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 30000
+})
     .then(() => console.log("MongoDB Connected"))
     .catch(err => console.log("MongoDB Error:", err));
 
