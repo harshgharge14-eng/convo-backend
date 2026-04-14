@@ -6,11 +6,20 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const http = require("http");
+const { Server } = require("socket.io");
 
 const User = require("./User");
 const Message = require("./Message");
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
 // Needed when behind a proxy/load balancer
 app.set("trust proxy", true);
@@ -151,8 +160,70 @@ app.get("/messages", async (req, res) => {
     }
 });
 
+// Socket.IO signaling starter
+io.on("connection", (socket) => {
+    console.log("Socket connected:", socket.id);
+
+    socket.on("join-room", ({ roomId, userId }) => {
+        socket.join(roomId);
+        socket.data.roomId = roomId;
+        socket.data.userId = userId;
+
+        console.log(`${userId} joined room ${roomId}`);
+
+        socket.to(roomId).emit("user-joined", {
+            userId,
+            socketId: socket.id
+        });
+    });
+
+    socket.on("offer", ({ roomId, offer, to }) => {
+        io.to(to).emit("offer", {
+            offer,
+            from: socket.id,
+            roomId
+        });
+    });
+
+    socket.on("answer", ({ answer, to }) => {
+        io.to(to).emit("answer", {
+            answer,
+            from: socket.id
+        });
+    });
+
+    socket.on("ice-candidate", ({ candidate, to }) => {
+        io.to(to).emit("ice-candidate", {
+            candidate,
+            from: socket.id
+        });
+    });
+
+    socket.on("leave-room", ({ roomId, userId }) => {
+        socket.leave(roomId);
+        socket.to(roomId).emit("user-left", {
+            userId,
+            socketId: socket.id
+        });
+    });
+
+    socket.on("disconnect", () => {
+        const roomId = socket.data.roomId;
+        const userId = socket.data.userId;
+
+        if (roomId) {
+            socket.to(roomId).emit("user-left", {
+                userId,
+                socketId: socket.id
+            });
+        }
+
+        console.log("Socket disconnected:", socket.id);
+    });
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server started on port ${PORT}`);
 });
