@@ -129,9 +129,14 @@ app.post("/login", async (req, res) => {
 // Send message
 app.post("/sendMessage", async (req, res) => {
     try {
-        const { sender, message, audioUrl, type } = req.body;
+        const { email, sender, message, audioUrl, type } = req.body;
+
+        if (!email) {
+            return res.status(400).json({ message: "Email is required" });
+        }
 
         const newMessage = new Message({
+            email,
             sender,
             message,
             audioUrl,
@@ -152,7 +157,13 @@ app.post("/sendMessage", async (req, res) => {
 // Get messages
 app.get("/messages", async (req, res) => {
     try {
-        const messages = await Message.find().sort({ time: 1 });
+        const { email } = req.query;
+
+        if (!email) {
+            return res.status(400).json({ message: "Email is required" });
+        }
+
+        const messages = await Message.find({ email }).sort({ time: 1 });
         res.json(messages);
     } catch (error) {
         console.log("Get messages error:", error);
