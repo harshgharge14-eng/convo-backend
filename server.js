@@ -178,6 +178,8 @@ io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
     socket.on("create-room", ({ roomId, userId }) => {
+        if (!roomId || !userId) return;
+
         roomHosts[roomId] = socket.id;
         socket.join(roomId);
         socket.data.roomId = roomId;
@@ -188,6 +190,8 @@ io.on("connection", (socket) => {
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
+        if (!roomId || !userId) return;
+
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = false;
@@ -209,25 +213,35 @@ io.on("connection", (socket) => {
     });
 
     socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
+        if (!roomId || !guestSocketId || !userId) return;
+
         const guestSocket = io.sockets.sockets.get(guestSocketId);
 
-        if (guestSocket) {
-            guestSocket.join(roomId);
-            io.to(guestSocketId).emit("join-approved", {
-                roomId,
-                userId
-            });
-
-            socket.to(roomId).emit("user-joined", {
-                userId,
-                socketId: guestSocketId
-            });
-
-            console.log(`Host approved ${userId} for room ${roomId}`);
+        if (!guestSocket) {
+            return;
         }
+
+        guestSocket.join(roomId);
+        guestSocket.data.roomId = roomId;
+        guestSocket.data.userId = userId;
+        guestSocket.data.isHost = false;
+
+        io.to(guestSocketId).emit("join-approved", {
+            roomId,
+            userId
+        });
+
+        io.to(roomId).emit("user-joined", {
+            userId,
+            socketId: guestSocketId
+        });
+
+        console.log(`Host approved ${userId} for room ${roomId}`);
     });
 
     socket.on("reject-join", ({ guestSocketId, userId }) => {
+        if (!guestSocketId || !userId) return;
+
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
         });
@@ -236,14 +250,20 @@ io.on("connection", (socket) => {
     });
 
     socket.on("offer", ({ roomId, offer }) => {
+        if (!roomId || !offer) return;
+
         socket.to(roomId).emit("offer", { offer });
     });
 
     socket.on("answer", ({ roomId, answer }) => {
+        if (!roomId || !answer) return;
+
         socket.to(roomId).emit("answer", { answer });
     });
 
     socket.on("ice-candidate", ({ roomId, candidate, sdpMid, sdpMLineIndex }) => {
+        if (!roomId || !candidate) return;
+
         socket.to(roomId).emit("ice-candidate", {
             candidate,
             sdpMid,
@@ -252,7 +272,10 @@ io.on("connection", (socket) => {
     });
 
     socket.on("leave-room", ({ roomId, userId }) => {
+        if (!roomId || !userId) return;
+
         socket.leave(roomId);
+
         socket.to(roomId).emit("user-left", {
             userId,
             socketId: socket.id
@@ -267,14 +290,14 @@ io.on("connection", (socket) => {
         const roomId = socket.data.roomId;
         const userId = socket.data.userId;
 
-        if (roomId) {
+        if (roomId && userId) {
             socket.to(roomId).emit("user-left", {
                 userId,
                 socketId: socket.id
             });
         }
 
-        if (socket.data.isHost && roomHosts[roomId] === socket.id) {
+        if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
         }
 
