@@ -21,6 +21,8 @@ const io = new Server(server, {
     }
 });
 
+const roomHosts = {};
+
 // Needed when behind a proxy/load balancer
 app.set("trust proxy", true);
 
@@ -171,33 +173,74 @@ app.get("/messages", async (req, res) => {
     }
 });
 
-// Socket.IO signaling starter
+// Socket.IO
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
-    socket.on("join-room", ({ roomId, userId }) => {
+    socket.on("create-room", ({ roomId, userId }) => {
+        roomHosts[roomId] = socket.id;
         socket.join(roomId);
         socket.data.roomId = roomId;
         socket.data.userId = userId;
+        socket.data.isHost = true;
 
-        console.log(`${userId} joined room ${roomId}`);
+        console.log(`Host ${userId} created room ${roomId}`);
+    });
 
-        socket.to(roomId).emit("user-joined", {
+    socket.on("join-request", ({ roomId, userId }) => {
+        socket.data.roomId = roomId;
+        socket.data.userId = userId;
+        socket.data.isHost = false;
+
+        const hostSocketId = roomHosts[roomId];
+
+        if (!hostSocketId) {
+            socket.emit("join-rejected", {
+                message: "Host not available"
+            });
+            return;
+        }
+
+        io.to(hostSocketId).emit("join-request", {
+            roomId,
             userId,
-            socketId: socket.id
+            guestSocketId: socket.id
         });
+    });
+
+    socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
+        const guestSocket = io.sockets.sockets.get(guestSocketId);
+
+        if (guestSocket) {
+            guestSocket.join(roomId);
+            io.to(guestSocketId).emit("join-approved", {
+                roomId,
+                userId
+            });
+
+            socket.to(roomId).emit("user-joined", {
+                userId,
+                socketId: guestSocketId
+            });
+
+            console.log(`Host approved ${userId} for room ${roomId}`);
+        }
+    });
+
+    socket.on("reject-join", ({ guestSocketId, userId }) => {
+        io.to(guestSocketId).emit("join-rejected", {
+            message: `${userId} was rejected by host`
+        });
+
+        console.log(`Host rejected ${userId}`);
     });
 
     socket.on("offer", ({ roomId, offer }) => {
-        socket.to(roomId).emit("offer", {
-            offer
-        });
+        socket.to(roomId).emit("offer", { offer });
     });
 
     socket.on("answer", ({ roomId, answer }) => {
-        socket.to(roomId).emit("answer", {
-            answer
-        });
+        socket.to(roomId).emit("answer", { answer });
     });
 
     socket.on("ice-candidate", ({ roomId, candidate, sdpMid, sdpMLineIndex }) => {
@@ -214,6 +257,10 @@ io.on("connection", (socket) => {
             userId,
             socketId: socket.id
         });
+
+        if (socket.data.isHost && roomHosts[roomId] === socket.id) {
+            delete roomHosts[roomId];
+        }
     });
 
     socket.on("disconnect", () => {
@@ -225,6 +272,10 @@ io.on("connection", (socket) => {
                 userId,
                 socketId: socket.id
             });
+        }
+
+        if (socket.data.isHost && roomHosts[roomId] === socket.id) {
+            delete roomHosts[roomId];
         }
 
         console.log("Socket disconnected:", socket.id);
