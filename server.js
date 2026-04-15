@@ -188,25 +188,23 @@ io.on("connection", (socket) => {
         });
     });
 
-    socket.on("offer", ({ roomId, offer, to }) => {
-        io.to(to).emit("offer", {
-            offer,
-            from: socket.id,
-            roomId
+    socket.on("offer", ({ roomId, offer }) => {
+        socket.to(roomId).emit("offer", {
+            offer
         });
     });
 
-    socket.on("answer", ({ answer, to }) => {
-        io.to(to).emit("answer", {
-            answer,
-            from: socket.id
+    socket.on("answer", ({ roomId, answer }) => {
+        socket.to(roomId).emit("answer", {
+            answer
         });
     });
 
-    socket.on("ice-candidate", ({ candidate, to }) => {
-        io.to(to).emit("ice-candidate", {
+    socket.on("ice-candidate", ({ roomId, candidate, sdpMid, sdpMLineIndex }) => {
+        socket.to(roomId).emit("ice-candidate", {
             candidate,
-            from: socket.id
+            sdpMid,
+            sdpMLineIndex
         });
     });
 
