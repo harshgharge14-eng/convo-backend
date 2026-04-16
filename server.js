@@ -23,15 +23,12 @@ const io = new Server(server, {
 
 const roomHosts = {};
 
-// Needed when behind a proxy/load balancer
 app.set("trust proxy", true);
 
-// Create uploads folder if not exists
 if (!fs.existsSync("uploads")) {
     fs.mkdirSync("uploads");
 }
 
-// Multer config
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, "uploads/");
@@ -43,14 +40,10 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Middleware
 app.use(express.json());
 app.use(cors());
-
-// Serve uploaded files
 app.use("/uploads", express.static("uploads"));
 
-// MongoDB connection
 mongoose.set("bufferCommands", false);
 
 mongoose.connect(process.env.MONGO_URI, {
@@ -59,12 +52,10 @@ mongoose.connect(process.env.MONGO_URI, {
     .then(() => console.log("MongoDB Connected"))
     .catch(err => console.log("MongoDB Error:", err));
 
-// Test route
 app.get("/", (req, res) => {
     res.send("Server Running");
 });
 
-// Upload audio
 app.post("/uploadAudio", upload.single("audio"), (req, res) => {
     try {
         if (!req.file) {
@@ -79,7 +70,6 @@ app.post("/uploadAudio", upload.single("audio"), (req, res) => {
     }
 });
 
-// Signup
 app.post("/signup", async (req, res) => {
     try {
         console.log("Signup request body:", req.body);
@@ -107,7 +97,6 @@ app.post("/signup", async (req, res) => {
     }
 });
 
-// Login
 app.post("/login", async (req, res) => {
     try {
         console.log("Login request body:", req.body);
@@ -128,7 +117,6 @@ app.post("/login", async (req, res) => {
     }
 });
 
-// Send message
 app.post("/sendMessage", async (req, res) => {
     try {
         const { email, sender, message, audioUrl, type } = req.body;
@@ -156,7 +144,6 @@ app.post("/sendMessage", async (req, res) => {
     }
 });
 
-// Get messages
 app.get("/messages", async (req, res) => {
     try {
         const { email } = req.query;
@@ -173,7 +160,6 @@ app.get("/messages", async (req, res) => {
     }
 });
 
-// Socket.IO
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
@@ -186,7 +172,30 @@ io.on("connection", (socket) => {
         socket.data.userId = userId;
         socket.data.isHost = true;
 
-        console.log(`Host ${userId} created room ${roomId}`);
+        console.log("Room created:", roomId, "Host:", userId, "Socket:", socket.id);
+        console.log("Current roomHosts:", roomHosts);
+
+        socket.emit("room-created", {
+            roomId,
+            userId,
+            hostSocketId: socket.id
+        });
+    });
+
+    socket.on("join-room", ({ roomId, userId }) => {
+        if (!roomId || !userId) return;
+
+        socket.join(roomId);
+        socket.data.roomId = roomId;
+        socket.data.userId = userId;
+        socket.data.isHost = false;
+
+        socket.to(roomId).emit("user-joined", {
+            userId,
+            socketId: socket.id
+        });
+
+        console.log(`${userId} joined room ${roomId}`);
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
@@ -196,7 +205,19 @@ io.on("connection", (socket) => {
         socket.data.userId = userId;
         socket.data.isHost = false;
 
-        const hostSocketId = roomHosts[roomId];
+        let hostSocketId = roomHosts[roomId];
+
+        if (!hostSocketId) {
+            const room = io.sockets.adapter.rooms.get(roomId);
+            if (room && room.size > 0) {
+                hostSocketId = [...room][0];
+                roomHosts[roomId] = hostSocketId;
+            }
+        }
+
+        console.log("Join request for room:", roomId, "from:", userId);
+        console.log("Found hostSocketId:", hostSocketId);
+        console.log("Current roomHosts:", roomHosts);
 
         if (!hostSocketId) {
             socket.emit("join-rejected", {
@@ -218,6 +239,7 @@ io.on("connection", (socket) => {
         const guestSocket = io.sockets.sockets.get(guestSocketId);
 
         if (!guestSocket) {
+            console.log("Guest socket not found:", guestSocketId);
             return;
         }
 
@@ -251,13 +273,11 @@ io.on("connection", (socket) => {
 
     socket.on("offer", ({ roomId, offer }) => {
         if (!roomId || !offer) return;
-
         socket.to(roomId).emit("offer", { offer });
     });
 
     socket.on("answer", ({ roomId, answer }) => {
         if (!roomId || !answer) return;
-
         socket.to(roomId).emit("answer", { answer });
     });
 
@@ -283,6 +303,7 @@ io.on("connection", (socket) => {
 
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            console.log("Host removed for room:", roomId);
         }
     });
 
@@ -299,13 +320,14 @@ io.on("connection", (socket) => {
 
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            console.log("Host disconnected, removed room:", roomId);
         }
 
         console.log("Socket disconnected:", socket.id);
+        console.log("Current roomHosts after disconnect:", roomHosts);
     });
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server started on port ${PORT}`);
