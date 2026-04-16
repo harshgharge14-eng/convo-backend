@@ -8,6 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const { Server } = require("socket.io");
+const { AccessToken } = require("livekit-server-sdk");
 
 const User = require("./User");
 const Message = require("./Message");
@@ -56,6 +57,39 @@ app.get("/", (req, res) => {
     res.send("Server Running");
 });
 
+app.get("/livekit-token", async (req, res) => {
+    try {
+        const { room, identity } = req.query;
+
+        if (!room || !identity) {
+            return res.status(400).json({ message: "room and identity are required" });
+        }
+
+        const at = new AccessToken(
+            process.env.LIVEKIT_API_KEY,
+            process.env.LIVEKIT_API_SECRET,
+            { identity: identity.toString() }
+        );
+
+        at.addGrant({
+            roomJoin: true,
+            room: room.toString(),
+            canPublish: true,
+            canSubscribe: true
+        });
+
+        const token = await at.toJwt();
+
+        res.json({
+            token,
+            url: process.env.LIVEKIT_URL
+        });
+    } catch (error) {
+        console.log("LiveKit token error:", error);
+        res.status(500).json({ message: error.message || "Failed to generate token" });
+    }
+});
+
 app.post("/uploadAudio", upload.single("audio"), (req, res) => {
     try {
         if (!req.file) {
@@ -72,8 +106,6 @@ app.post("/uploadAudio", upload.single("audio"), (req, res) => {
 
 app.post("/signup", async (req, res) => {
     try {
-        console.log("Signup request body:", req.body);
-
         const { email, password } = req.body;
 
         if (!email || !password) {
@@ -88,9 +120,7 @@ app.post("/signup", async (req, res) => {
         const newUser = new User({ email, password });
         await newUser.save();
 
-        console.log("User created successfully:", email);
         res.json({ message: "User created successfully" });
-
     } catch (error) {
         console.log("Signup error:", error);
         res.status(500).json({ message: error.message || "Error creating user" });
@@ -99,10 +129,7 @@ app.post("/signup", async (req, res) => {
 
 app.post("/login", async (req, res) => {
     try {
-        console.log("Login request body:", req.body);
-
         const { email, password } = req.body;
-
         const user = await User.findOne({ email, password });
 
         if (user) {
@@ -110,7 +137,6 @@ app.post("/login", async (req, res) => {
         } else {
             res.json({ message: "Invalid credentials" });
         }
-
     } catch (error) {
         console.log("Login error:", error);
         res.status(500).json({ message: error.message || "Error logging in" });
@@ -135,9 +161,7 @@ app.post("/sendMessage", async (req, res) => {
         });
 
         await newMessage.save();
-
         res.json({ message: "Message sent" });
-
     } catch (error) {
         console.log("Send message error:", error);
         res.status(500).json({ message: error.message || "Error sending message" });
@@ -172,9 +196,6 @@ io.on("connection", (socket) => {
         socket.data.userId = userId;
         socket.data.isHost = true;
 
-        console.log("Room created:", roomId, "Host:", userId, "Socket:", socket.id);
-        console.log("Current roomHosts:", roomHosts);
-
         socket.emit("room-created", {
             roomId,
             userId,
@@ -194,8 +215,6 @@ io.on("connection", (socket) => {
             userId,
             socketId: socket.id
         });
-
-        console.log(`${userId} joined room ${roomId}`);
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
@@ -215,10 +234,6 @@ io.on("connection", (socket) => {
             }
         }
 
-        console.log("Join request for room:", roomId, "from:", userId);
-        console.log("Found hostSocketId:", hostSocketId);
-        console.log("Current roomHosts:", roomHosts);
-
         if (!hostSocketId) {
             socket.emit("join-rejected", {
                 message: "Host not available"
@@ -237,11 +252,7 @@ io.on("connection", (socket) => {
         if (!roomId || !guestSocketId || !userId) return;
 
         const guestSocket = io.sockets.sockets.get(guestSocketId);
-
-        if (!guestSocket) {
-            console.log("Guest socket not found:", guestSocketId);
-            return;
-        }
+        if (!guestSocket) return;
 
         guestSocket.join(roomId);
         guestSocket.data.roomId = roomId;
@@ -257,8 +268,6 @@ io.on("connection", (socket) => {
             userId,
             socketId: guestSocketId
         });
-
-        console.log(`Host approved ${userId} for room ${roomId}`);
     });
 
     socket.on("reject-join", ({ guestSocketId, userId }) => {
@@ -266,28 +275,6 @@ io.on("connection", (socket) => {
 
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
-        });
-
-        console.log(`Host rejected ${userId}`);
-    });
-
-    socket.on("offer", ({ roomId, offer }) => {
-        if (!roomId || !offer) return;
-        socket.to(roomId).emit("offer", { offer });
-    });
-
-    socket.on("answer", ({ roomId, answer }) => {
-        if (!roomId || !answer) return;
-        socket.to(roomId).emit("answer", { answer });
-    });
-
-    socket.on("ice-candidate", ({ roomId, candidate, sdpMid, sdpMLineIndex }) => {
-        if (!roomId || !candidate) return;
-
-        socket.to(roomId).emit("ice-candidate", {
-            candidate,
-            sdpMid,
-            sdpMLineIndex
         });
     });
 
@@ -303,7 +290,6 @@ io.on("connection", (socket) => {
 
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
-            console.log("Host removed for room:", roomId);
         }
     });
 
@@ -320,11 +306,7 @@ io.on("connection", (socket) => {
 
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
-            console.log("Host disconnected, removed room:", roomId);
         }
-
-        console.log("Socket disconnected:", socket.id);
-        console.log("Current roomHosts after disconnect:", roomHosts);
     });
 });
 
