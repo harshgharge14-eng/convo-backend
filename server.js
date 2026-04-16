@@ -66,8 +66,8 @@ app.get("/livekit-token", async (req, res) => {
         }
 
         const at = new AccessToken(
-            process.env.LIVEKIT_API_KEY,
-            process.env.LIVEKIT_API_SECRET,
+            process.env.APItfvHCmD642ZX,
+            process.env.ViQNe2ejI1LietQwJFt5Cdv22JZ90ENDIRc4iSdoN0RB,
             { identity: identity.toString() }
         );
 
@@ -82,7 +82,7 @@ app.get("/livekit-token", async (req, res) => {
 
         res.json({
             token,
-            url: process.env.LIVEKIT_URL
+            url: process.env.wss://convo-11a11bvk.livekit.cloud
         });
     } catch (error) {
         console.log("LiveKit token error:", error);
