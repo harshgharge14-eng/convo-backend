@@ -66,14 +66,6 @@ app.get("/livekit-token", async (req, res) => {
             return res.status(400).json({ message: "room and identity are required" });
         }
 
-        if (
-            !process.env.LIVEKIT_API_KEY ||
-            !process.env.LIVEKIT_API_SECRET ||
-            !process.env.LIVEKIT_URL
-        ) {
-            return res.status(500).json({ message: "LiveKit environment variables are missing" });
-        }
-
         const at = new AccessToken(
             process.env.LIVEKIT_API_KEY,
             process.env.LIVEKIT_API_SECRET,
@@ -130,7 +122,6 @@ app.post("/signup", async (req, res) => {
         const newUser = new User({ email, password });
         await newUser.save();
 
-        console.log("User created successfully:", email);
         res.json({ message: "User created successfully" });
     } catch (error) {
         console.log("Signup error:", error);
@@ -149,10 +140,8 @@ app.post("/login", async (req, res) => {
         const user = await User.findOne({ email, password });
 
         if (user) {
-            console.log("Login success:", email);
             res.json({ message: "Login success" });
         } else {
-            console.log("Invalid credentials:", email);
             res.json({ message: "Invalid credentials" });
         }
     } catch (error) {
@@ -206,25 +195,21 @@ io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
     socket.on("create-room", ({ roomId, userId, maxParticipants }) => {
-        if (!roomId || !userId) {
-            console.log("create-room missing data");
-            return;
-        }
+        if (!roomId || !userId) return;
 
         roomHosts[roomId] = socket.id;
-        roomLimits[roomId] = maxParticipants || roomLimits[roomId] || 10;
+        roomLimits[roomId] = maxParticipants || 10;
 
         socket.join(roomId);
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = true;
 
-        console.log("HOST CREATED ROOM:", roomId, userId, socket.id, "limit:", roomLimits[roomId]);
+        console.log("HOST CREATED ROOM:", roomId, userId, socket.id, roomLimits[roomId]);
 
         socket.emit("room-created", {
             roomId,
             userId,
-            hostSocketId: socket.id,
             maxParticipants: roomLimits[roomId]
         });
     });
@@ -233,15 +218,11 @@ io.on("connection", (socket) => {
         if (!roomId || !maxParticipants) return;
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             roomLimits[roomId] = maxParticipants;
-            console.log("ROOM LIMIT UPDATED:", roomId, maxParticipants);
         }
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
-        if (!roomId || !userId) {
-            console.log("join-request missing data");
-            return;
-        }
+        if (!roomId || !userId) return;
 
         socket.data.roomId = roomId;
         socket.data.userId = userId;
@@ -258,9 +239,7 @@ io.on("connection", (socket) => {
         }
 
         if (!hostSocketId) {
-            socket.emit("join-rejected", {
-                message: "Host not available"
-            });
+            socket.emit("join-rejected", { message: "Host not available" });
             return;
         }
 
@@ -269,9 +248,7 @@ io.on("connection", (socket) => {
         const maxParticipants = roomLimits[roomId] || 10;
 
         if (currentParticipants >= maxParticipants) {
-            socket.emit("join-rejected", {
-                message: "Meeting is full"
-            });
+            socket.emit("join-rejected", { message: "Meeting is full" });
             return;
         }
 
@@ -283,28 +260,19 @@ io.on("connection", (socket) => {
     });
 
     socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
-        if (!roomId || !guestSocketId || !userId) {
-            console.log("approve-join missing data");
-            return;
-        }
+        if (!roomId || !guestSocketId || !userId) return;
 
         const room = io.sockets.adapter.rooms.get(roomId);
         const currentParticipants = room ? room.size : 0;
         const maxParticipants = roomLimits[roomId] || 10;
 
         if (currentParticipants >= maxParticipants) {
-            io.to(guestSocketId).emit("join-rejected", {
-                message: "Meeting is full"
-            });
+            io.to(guestSocketId).emit("join-rejected", { message: "Meeting is full" });
             return;
         }
 
         const guestSocket = io.sockets.sockets.get(guestSocketId);
-
-        if (!guestSocket) {
-            console.log("Guest socket not found:", guestSocketId);
-            return;
-        }
+        if (!guestSocket) return;
 
         guestSocket.join(roomId);
         guestSocket.data.roomId = roomId;
@@ -324,7 +292,6 @@ io.on("connection", (socket) => {
 
     socket.on("reject-join", ({ guestSocketId, userId }) => {
         if (!guestSocketId || !userId) return;
-
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
         });
