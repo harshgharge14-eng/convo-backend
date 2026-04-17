@@ -15,7 +15,6 @@ const Message = require("./Message");
 
 const app = express();
 const server = http.createServer(app);
-
 const io = new Server(server, {
     cors: {
         origin: "*",
@@ -24,6 +23,7 @@ const io = new Server(server, {
 });
 
 const roomHosts = {};
+const roomLimits = {};
 
 app.set("trust proxy", true);
 
@@ -84,7 +84,8 @@ app.get("/livekit-token", async (req, res) => {
             roomJoin: true,
             room: room.toString(),
             canPublish: true,
-            canSubscribe: true
+            canSubscribe: true,
+            canPublishData: true
         });
 
         const token = await at.toJwt();
@@ -204,41 +205,36 @@ app.get("/messages", async (req, res) => {
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
-    socket.on("create-room", ({ roomId, userId }) => {
+    socket.on("create-room", ({ roomId, userId, maxParticipants }) => {
         if (!roomId || !userId) {
             console.log("create-room missing data");
             return;
         }
 
-        console.log("HOST CREATED ROOM:", roomId, userId, socket.id);
-
         roomHosts[roomId] = socket.id;
+        roomLimits[roomId] = maxParticipants || roomLimits[roomId] || 10;
+
         socket.join(roomId);
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = true;
 
+        console.log("HOST CREATED ROOM:", roomId, userId, socket.id, "limit:", roomLimits[roomId]);
+
         socket.emit("room-created", {
             roomId,
             userId,
-            hostSocketId: socket.id
+            hostSocketId: socket.id,
+            maxParticipants: roomLimits[roomId]
         });
     });
 
-    socket.on("join-room", ({ roomId, userId }) => {
-        if (!roomId || !userId) return;
-
-        console.log("JOIN ROOM:", roomId, userId, socket.id);
-
-        socket.join(roomId);
-        socket.data.roomId = roomId;
-        socket.data.userId = userId;
-        socket.data.isHost = false;
-
-        socket.to(roomId).emit("user-joined", {
-            userId,
-            socketId: socket.id
-        });
+    socket.on("set-room-limit", ({ roomId, maxParticipants }) => {
+        if (!roomId || !maxParticipants) return;
+        if (socket.data.isHost && roomHosts[roomId] === socket.id) {
+            roomLimits[roomId] = maxParticipants;
+            console.log("ROOM LIMIT UPDATED:", roomId, maxParticipants);
+        }
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
@@ -247,35 +243,37 @@ io.on("connection", (socket) => {
             return;
         }
 
-        console.log("JOIN REQUEST:", roomId, userId, socket.id);
-
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = false;
 
         let hostSocketId = roomHosts[roomId];
 
-        console.log("Current roomHosts map:", roomHosts);
-        console.log("Host socket from map:", hostSocketId);
-
         if (!hostSocketId) {
             const room = io.sockets.adapter.rooms.get(roomId);
             if (room && room.size > 0) {
                 hostSocketId = [...room][0];
                 roomHosts[roomId] = hostSocketId;
-                console.log("Fallback host found from room:", hostSocketId);
             }
         }
 
         if (!hostSocketId) {
-            console.log("Host not available for room:", roomId);
             socket.emit("join-rejected", {
                 message: "Host not available"
             });
             return;
         }
 
-        console.log("Sending join request to host:", hostSocketId);
+        const room = io.sockets.adapter.rooms.get(roomId);
+        const currentParticipants = room ? room.size : 0;
+        const maxParticipants = roomLimits[roomId] || 10;
+
+        if (currentParticipants >= maxParticipants) {
+            socket.emit("join-rejected", {
+                message: "Meeting is full"
+            });
+            return;
+        }
 
         io.to(hostSocketId).emit("join-request", {
             roomId,
@@ -290,7 +288,16 @@ io.on("connection", (socket) => {
             return;
         }
 
-        console.log("APPROVE JOIN:", roomId, guestSocketId, userId);
+        const room = io.sockets.adapter.rooms.get(roomId);
+        const currentParticipants = room ? room.size : 0;
+        const maxParticipants = roomLimits[roomId] || 10;
+
+        if (currentParticipants >= maxParticipants) {
+            io.to(guestSocketId).emit("join-rejected", {
+                message: "Meeting is full"
+            });
+            return;
+        }
 
         const guestSocket = io.sockets.sockets.get(guestSocketId);
 
@@ -316,12 +323,7 @@ io.on("connection", (socket) => {
     });
 
     socket.on("reject-join", ({ guestSocketId, userId }) => {
-        if (!guestSocketId || !userId) {
-            console.log("reject-join missing data");
-            return;
-        }
-
-        console.log("REJECT JOIN:", guestSocketId, userId);
+        if (!guestSocketId || !userId) return;
 
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
@@ -330,8 +332,6 @@ io.on("connection", (socket) => {
 
     socket.on("leave-room", ({ roomId, userId }) => {
         if (!roomId || !userId) return;
-
-        console.log("LEAVE ROOM:", roomId, userId, socket.id);
 
         socket.leave(roomId);
 
@@ -342,15 +342,13 @@ io.on("connection", (socket) => {
 
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
-            console.log("Deleted host room mapping for:", roomId);
+            delete roomLimits[roomId];
         }
     });
 
     socket.on("disconnect", () => {
         const roomId = socket.data.roomId;
         const userId = socket.data.userId;
-
-        console.log("Socket disconnected:", socket.id, roomId, userId);
 
         if (roomId && userId) {
             socket.to(roomId).emit("user-left", {
@@ -361,7 +359,7 @@ io.on("connection", (socket) => {
 
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
-            console.log("Deleted host room mapping on disconnect for:", roomId);
+            delete roomLimits[roomId];
         }
     });
 });
