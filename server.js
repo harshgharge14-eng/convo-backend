@@ -65,9 +65,13 @@ app.get("/livekit-token", async (req, res) => {
             return res.status(400).json({ message: "room and identity are required" });
         }
 
+        if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_URL) {
+            return res.status(500).json({ message: "LiveKit environment variables are missing" });
+        }
+
         const at = new AccessToken(
-            process.env.APItfvHCmD642ZX,
-            process.env.ViQNe2ejI1LietQwJFt5Cdv22JZ90ENDIRc4iSdoN0RB,
+            process.env.LIVEKIT_API_KEY,
+            process.env.LIVEKIT_API_SECRET,
             { identity: identity.toString() }
         );
 
@@ -82,7 +86,7 @@ app.get("/livekit-token", async (req, res) => {
 
         res.json({
             token,
-            url: process.env.wss://convo-11a11bvk.livekit.cloud
+            url: process.env.LIVEKIT_URL
         });
     } catch (error) {
         console.log("LiveKit token error:", error);
@@ -130,6 +134,11 @@ app.post("/signup", async (req, res) => {
 app.post("/login", async (req, res) => {
     try {
         const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ message: "Email and Password required" });
+        }
+
         const user = await User.findOne({ email, password });
 
         if (user) {
