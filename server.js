@@ -15,6 +15,7 @@ const Message = require("./Message");
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
     cors: {
         origin: "*",
@@ -65,7 +66,11 @@ app.get("/livekit-token", async (req, res) => {
             return res.status(400).json({ message: "room and identity are required" });
         }
 
-        if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_URL) {
+        if (
+            !process.env.LIVEKIT_API_KEY ||
+            !process.env.LIVEKIT_API_SECRET ||
+            !process.env.LIVEKIT_URL
+        ) {
             return res.status(500).json({ message: "LiveKit environment variables are missing" });
         }
 
@@ -124,6 +129,7 @@ app.post("/signup", async (req, res) => {
         const newUser = new User({ email, password });
         await newUser.save();
 
+        console.log("User created successfully:", email);
         res.json({ message: "User created successfully" });
     } catch (error) {
         console.log("Signup error:", error);
@@ -142,8 +148,10 @@ app.post("/login", async (req, res) => {
         const user = await User.findOne({ email, password });
 
         if (user) {
+            console.log("Login success:", email);
             res.json({ message: "Login success" });
         } else {
+            console.log("Invalid credentials:", email);
             res.json({ message: "Invalid credentials" });
         }
     } catch (error) {
@@ -197,7 +205,12 @@ io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
     socket.on("create-room", ({ roomId, userId }) => {
-        if (!roomId || !userId) return;
+        if (!roomId || !userId) {
+            console.log("create-room missing data");
+            return;
+        }
+
+        console.log("HOST CREATED ROOM:", roomId, userId, socket.id);
 
         roomHosts[roomId] = socket.id;
         socket.join(roomId);
@@ -215,6 +228,8 @@ io.on("connection", (socket) => {
     socket.on("join-room", ({ roomId, userId }) => {
         if (!roomId || !userId) return;
 
+        console.log("JOIN ROOM:", roomId, userId, socket.id);
+
         socket.join(roomId);
         socket.data.roomId = roomId;
         socket.data.userId = userId;
@@ -227,7 +242,12 @@ io.on("connection", (socket) => {
     });
 
     socket.on("join-request", ({ roomId, userId }) => {
-        if (!roomId || !userId) return;
+        if (!roomId || !userId) {
+            console.log("join-request missing data");
+            return;
+        }
+
+        console.log("JOIN REQUEST:", roomId, userId, socket.id);
 
         socket.data.roomId = roomId;
         socket.data.userId = userId;
@@ -235,20 +255,27 @@ io.on("connection", (socket) => {
 
         let hostSocketId = roomHosts[roomId];
 
+        console.log("Current roomHosts map:", roomHosts);
+        console.log("Host socket from map:", hostSocketId);
+
         if (!hostSocketId) {
             const room = io.sockets.adapter.rooms.get(roomId);
             if (room && room.size > 0) {
                 hostSocketId = [...room][0];
                 roomHosts[roomId] = hostSocketId;
+                console.log("Fallback host found from room:", hostSocketId);
             }
         }
 
         if (!hostSocketId) {
+            console.log("Host not available for room:", roomId);
             socket.emit("join-rejected", {
                 message: "Host not available"
             });
             return;
         }
+
+        console.log("Sending join request to host:", hostSocketId);
 
         io.to(hostSocketId).emit("join-request", {
             roomId,
@@ -258,10 +285,19 @@ io.on("connection", (socket) => {
     });
 
     socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
-        if (!roomId || !guestSocketId || !userId) return;
+        if (!roomId || !guestSocketId || !userId) {
+            console.log("approve-join missing data");
+            return;
+        }
+
+        console.log("APPROVE JOIN:", roomId, guestSocketId, userId);
 
         const guestSocket = io.sockets.sockets.get(guestSocketId);
-        if (!guestSocket) return;
+
+        if (!guestSocket) {
+            console.log("Guest socket not found:", guestSocketId);
+            return;
+        }
 
         guestSocket.join(roomId);
         guestSocket.data.roomId = roomId;
@@ -280,7 +316,12 @@ io.on("connection", (socket) => {
     });
 
     socket.on("reject-join", ({ guestSocketId, userId }) => {
-        if (!guestSocketId || !userId) return;
+        if (!guestSocketId || !userId) {
+            console.log("reject-join missing data");
+            return;
+        }
+
+        console.log("REJECT JOIN:", guestSocketId, userId);
 
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
@@ -289,6 +330,8 @@ io.on("connection", (socket) => {
 
     socket.on("leave-room", ({ roomId, userId }) => {
         if (!roomId || !userId) return;
+
+        console.log("LEAVE ROOM:", roomId, userId, socket.id);
 
         socket.leave(roomId);
 
@@ -299,12 +342,15 @@ io.on("connection", (socket) => {
 
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            console.log("Deleted host room mapping for:", roomId);
         }
     });
 
     socket.on("disconnect", () => {
         const roomId = socket.data.roomId;
         const userId = socket.data.userId;
+
+        console.log("Socket disconnected:", socket.id, roomId, userId);
 
         if (roomId && userId) {
             socket.to(roomId).emit("user-left", {
@@ -315,6 +361,7 @@ io.on("connection", (socket) => {
 
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            console.log("Deleted host room mapping on disconnect for:", roomId);
         }
     });
 });
