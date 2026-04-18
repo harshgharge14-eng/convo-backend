@@ -69,7 +69,7 @@ app.get("/livekit-token", async (req, res) => {
         const at = new AccessToken(
             process.env.LIVEKIT_API_KEY,
             process.env.LIVEKIT_API_SECRET,
-            { identity: identity.toString() }
+            { identity: `${identity}@convo` }
         );
 
         at.addGrant({
