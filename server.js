@@ -30,6 +30,8 @@ const roomRecordingState = {};
 const roomTitles = {};
 const roomTypes = {};
 const roomPasswords = {};
+const blockedUsers = {};
+const raisedHands = {};
 
 app.set("trust proxy", true);
 
@@ -218,9 +220,10 @@ io.on("connection", (socket) => {
         roomTypes[roomId] = meetingType === "private" ? "private" : "public";
         roomPasswords[roomId] = roomTypes[roomId] === "private" ? (meetingPassword || "") : "";
 
-        if (!roomParticipants[roomId]) {
-            roomParticipants[roomId] = {};
-        }
+        if (!roomParticipants[roomId]) roomParticipants[roomId] = {};
+        if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
+        if (!raisedHands[roomId]) raisedHands[roomId] = {};
+
         roomParticipants[roomId][userId] = socket.id;
 
         socket.join(roomId);
@@ -234,6 +237,11 @@ io.on("connection", (socket) => {
             maxParticipants: roomLimits[roomId],
             hostUserId: roomHostUserIds[roomId]
         });
+
+        io.to(roomId).emit("participants-updated", {
+            participants: Object.keys(roomParticipants[roomId]),
+            hostUserId: roomHostUserIds[roomId]
+        });
     });
 
     socket.on("get-room-info", ({ roomId }) => {
@@ -245,7 +253,8 @@ io.on("connection", (socket) => {
             maxParticipants: roomLimits[roomId] || 10,
             isRecording: roomRecordingState[roomId] || false,
             meetingTitle: roomTitles[roomId] || "Meeting",
-            meetingType: roomTypes[roomId] || "public"
+            meetingType: roomTypes[roomId] || "public",
+            participants: Object.keys(roomParticipants[roomId] || {})
         });
     });
 
@@ -260,6 +269,17 @@ io.on("connection", (socket) => {
 
         if (!hostSocketId) {
             socket.emit("join-rejected", { message: "Host not available" });
+            return;
+        }
+
+        const cleanJoiner = String(userId).split("@")[0].split("__")[0];
+        const isBlocked = (blockedUsers[roomId] || []).some(u => {
+            const cleanBlocked = String(u).split("@")[0].split("__")[0];
+            return cleanBlocked === cleanJoiner;
+        });
+
+        if (isBlocked) {
+            socket.emit("join-rejected", { message: "Blocked by host" });
             return;
         }
 
@@ -306,9 +326,7 @@ io.on("connection", (socket) => {
         guestSocket.data.userId = userId;
         guestSocket.data.isHost = false;
 
-        if (!roomParticipants[roomId]) {
-            roomParticipants[roomId] = {};
-        }
+        if (!roomParticipants[roomId]) roomParticipants[roomId] = {};
         roomParticipants[roomId][userId] = guestSocketId;
 
         io.to(guestSocketId).emit("join-approved", {
@@ -330,7 +348,13 @@ io.on("connection", (socket) => {
             maxParticipants: roomLimits[roomId] || 10,
             isRecording: roomRecordingState[roomId] || false,
             meetingTitle: roomTitles[roomId] || "Meeting",
-            meetingType: roomTypes[roomId] || "public"
+            meetingType: roomTypes[roomId] || "public",
+            participants: Object.keys(roomParticipants[roomId] || {})
+        });
+
+        io.to(roomId).emit("participants-updated", {
+            participants: Object.keys(roomParticipants[roomId] || {}),
+            hostUserId: roomHostUserIds[roomId]
         });
     });
 
@@ -347,6 +371,22 @@ io.on("connection", (socket) => {
         socket.to(roomId).emit("force-mute");
     });
 
+    socket.on("mute-user", ({ targetUserId, roomId }) => {
+        if (!targetUserId || !roomId) return;
+        if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
+
+        const participants = roomParticipants[roomId] || {};
+        const cleanTarget = String(targetUserId).split("@")[0].split("__")[0];
+
+        for (const [userId, socketId] of Object.entries(participants)) {
+            const cleanUser = String(userId).split("@")[0].split("__")[0];
+            if (cleanUser === cleanTarget) {
+                io.to(socketId).emit("force-mute");
+                break;
+            }
+        }
+    });
+
     socket.on("kick-user", ({ roomId, targetUserId }) => {
         if (!roomId || !targetUserId) return;
         if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
@@ -361,18 +401,44 @@ io.on("connection", (socket) => {
 
         if (!foundEntry) return;
 
-        const [, socketId] = foundEntry;
+        const [realUserId, socketId] = foundEntry;
+
+        if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
+        if (!blockedUsers[roomId].includes(realUserId)) {
+            blockedUsers[roomId].push(realUserId);
+        }
+
+        if (raisedHands[roomId] && raisedHands[roomId][cleanTarget] !== undefined) {
+            delete raisedHands[roomId][cleanTarget];
+        }
+
+        delete roomParticipants[roomId][realUserId];
 
         io.to(socketId).emit("kicked", {
             message: "You were removed by host"
+        });
+
+        const kickedSocket = io.sockets.sockets.get(socketId);
+        if (kickedSocket) {
+            kickedSocket.leave(roomId);
+        }
+
+        io.to(roomId).emit("participants-updated", {
+            participants: Object.keys(roomParticipants[roomId] || {}),
+            hostUserId: roomHostUserIds[roomId]
         });
     });
 
     socket.on("raise-hand", ({ roomId, userId, raised }) => {
         if (!roomId || !userId) return;
 
+        const cleanUserId = String(userId).split("@")[0].split("__")[0];
+
+        if (!raisedHands[roomId]) raisedHands[roomId] = {};
+        raisedHands[roomId][cleanUserId] = !!raised;
+
         io.to(roomId).emit("hand-state-updated", {
-            userId: String(userId).split("@")[0].split("__")[0],
+            userId: cleanUserId,
             raised: !!raised
         });
     });
@@ -401,6 +467,11 @@ io.on("connection", (socket) => {
             delete roomParticipants[roomId][userId];
         }
 
+        io.to(roomId).emit("participants-updated", {
+            participants: Object.keys(roomParticipants[roomId] || {}),
+            hostUserId: roomHostUserIds[roomId] || ""
+        });
+
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
             delete roomHostUserIds[roomId];
@@ -410,6 +481,8 @@ io.on("connection", (socket) => {
             delete roomTitles[roomId];
             delete roomTypes[roomId];
             delete roomPasswords[roomId];
+            delete blockedUsers[roomId];
+            delete raisedHands[roomId];
         }
     });
 
@@ -428,6 +501,13 @@ io.on("connection", (socket) => {
             delete roomParticipants[roomId][userId];
         }
 
+        if (roomId) {
+            io.to(roomId).emit("participants-updated", {
+                participants: Object.keys(roomParticipants[roomId] || {}),
+                hostUserId: roomHostUserIds[roomId] || ""
+            });
+        }
+
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
             delete roomHostUserIds[roomId];
@@ -437,6 +517,8 @@ io.on("connection", (socket) => {
             delete roomTitles[roomId];
             delete roomTypes[roomId];
             delete roomPasswords[roomId];
+            delete blockedUsers[roomId];
+            delete raisedHands[roomId];
         }
     });
 });
