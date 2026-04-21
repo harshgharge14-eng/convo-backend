@@ -23,7 +23,10 @@ const io = new Server(server, {
 });
 
 const roomHosts = {};
+const roomHostUserIds = {};
+const roomParticipants = {};
 const roomLimits = {};
+const roomRecordingState = {};
 
 app.set("trust proxy", true);
 
@@ -198,7 +201,14 @@ io.on("connection", (socket) => {
         if (!roomId || !userId) return;
 
         roomHosts[roomId] = socket.id;
+        roomHostUserIds[roomId] = userId;
         roomLimits[roomId] = maxParticipants || 10;
+        roomRecordingState[roomId] = false;
+
+        if (!roomParticipants[roomId]) {
+            roomParticipants[roomId] = {};
+        }
+        roomParticipants[roomId][userId] = socket.id;
 
         socket.join(roomId);
         socket.data.roomId = roomId;
@@ -210,7 +220,19 @@ io.on("connection", (socket) => {
         socket.emit("room-created", {
             roomId,
             userId,
-            maxParticipants: roomLimits[roomId]
+            maxParticipants: roomLimits[roomId],
+            hostUserId: roomHostUserIds[roomId]
+        });
+    });
+
+    socket.on("get-room-info", ({ roomId }) => {
+        if (!roomId) return;
+
+        socket.emit("room-info", {
+            roomId,
+            hostUserId: roomHostUserIds[roomId] || "",
+            maxParticipants: roomLimits[roomId] || 10,
+            isRecording: roomRecordingState[roomId] || false
         });
     });
 
@@ -218,6 +240,12 @@ io.on("connection", (socket) => {
         if (!roomId || !maxParticipants) return;
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             roomLimits[roomId] = maxParticipants;
+            io.to(roomId).emit("room-info", {
+                roomId,
+                hostUserId: roomHostUserIds[roomId] || "",
+                maxParticipants: roomLimits[roomId],
+                isRecording: roomRecordingState[roomId] || false
+            });
         }
     });
 
@@ -228,15 +256,7 @@ io.on("connection", (socket) => {
         socket.data.userId = userId;
         socket.data.isHost = false;
 
-        let hostSocketId = roomHosts[roomId];
-
-        if (!hostSocketId) {
-            const room = io.sockets.adapter.rooms.get(roomId);
-            if (room && room.size > 0) {
-                hostSocketId = [...room][0];
-                roomHosts[roomId] = hostSocketId;
-            }
-        }
+        const hostSocketId = roomHosts[roomId];
 
         if (!hostSocketId) {
             socket.emit("join-rejected", { message: "Host not available" });
@@ -279,14 +299,27 @@ io.on("connection", (socket) => {
         guestSocket.data.userId = userId;
         guestSocket.data.isHost = false;
 
+        if (!roomParticipants[roomId]) {
+            roomParticipants[roomId] = {};
+        }
+        roomParticipants[roomId][userId] = guestSocketId;
+
         io.to(guestSocketId).emit("join-approved", {
             roomId,
-            userId
+            userId,
+            hostUserId: roomHostUserIds[roomId] || ""
         });
 
         io.to(roomId).emit("user-joined", {
             userId,
             socketId: guestSocketId
+        });
+
+        io.to(roomId).emit("room-info", {
+            roomId,
+            hostUserId: roomHostUserIds[roomId] || "",
+            maxParticipants: roomLimits[roomId] || 10,
+            isRecording: roomRecordingState[roomId] || false
         });
     });
 
@@ -294,6 +327,43 @@ io.on("connection", (socket) => {
         if (!guestSocketId || !userId) return;
         io.to(guestSocketId).emit("join-rejected", {
             message: `${userId} was rejected by host`
+        });
+    });
+
+    socket.on("mute-all", ({ roomId }) => {
+        if (!roomId) return;
+        if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
+        socket.to(roomId).emit("force-mute");
+    });
+
+    socket.on("kick-user", ({ roomId, targetUserId }) => {
+        if (!roomId || !targetUserId) return;
+        if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
+
+        const socketId = roomParticipants[roomId]?.[targetUserId];
+        if (!socketId) return;
+
+        io.to(socketId).emit("kicked", {
+            message: "You were removed by host"
+        });
+    });
+
+    socket.on("raise-hand", ({ roomId, userId, raised }) => {
+        if (!roomId || !userId) return;
+
+        io.to(roomId).emit("hand-state-updated", {
+            userId,
+            raised: !!raised
+        });
+    });
+
+    socket.on("recording-toggle", ({ roomId, recording }) => {
+        if (!roomId) return;
+        if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
+
+        roomRecordingState[roomId] = !!recording;
+        io.to(roomId).emit("recording-state", {
+            recording: roomRecordingState[roomId]
         });
     });
 
@@ -307,9 +377,16 @@ io.on("connection", (socket) => {
             socketId: socket.id
         });
 
+        if (roomParticipants[roomId] && roomParticipants[roomId][userId]) {
+            delete roomParticipants[roomId][userId];
+        }
+
         if (socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            delete roomHostUserIds[roomId];
             delete roomLimits[roomId];
+            delete roomParticipants[roomId];
+            delete roomRecordingState[roomId];
         }
     });
 
@@ -324,9 +401,16 @@ io.on("connection", (socket) => {
             });
         }
 
+        if (roomId && roomParticipants[roomId] && userId && roomParticipants[roomId][userId]) {
+            delete roomParticipants[roomId][userId];
+        }
+
         if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
             delete roomHosts[roomId];
+            delete roomHostUserIds[roomId];
             delete roomLimits[roomId];
+            delete roomParticipants[roomId];
+            delete roomRecordingState[roomId];
         }
     });
 });
