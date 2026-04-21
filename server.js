@@ -27,6 +27,9 @@ const roomHostUserIds = {};
 const roomParticipants = {};
 const roomLimits = {};
 const roomRecordingState = {};
+const roomTitles = {};
+const roomTypes = {};
+const roomPasswords = {};
 
 app.set("trust proxy", true);
 
@@ -197,13 +200,23 @@ app.get("/messages", async (req, res) => {
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
-    socket.on("create-room", ({ roomId, userId, maxParticipants }) => {
+    socket.on("create-room", ({
+        roomId,
+        userId,
+        maxParticipants,
+        meetingTitle,
+        meetingType,
+        meetingPassword
+    }) => {
         if (!roomId || !userId) return;
 
         roomHosts[roomId] = socket.id;
         roomHostUserIds[roomId] = userId;
         roomLimits[roomId] = maxParticipants || 10;
         roomRecordingState[roomId] = false;
+        roomTitles[roomId] = meetingTitle || "Meeting";
+        roomTypes[roomId] = meetingType === "private" ? "private" : "public";
+        roomPasswords[roomId] = roomTypes[roomId] === "private" ? (meetingPassword || "") : "";
 
         if (!roomParticipants[roomId]) {
             roomParticipants[roomId] = {};
@@ -214,8 +227,6 @@ io.on("connection", (socket) => {
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = true;
-
-        console.log("HOST CREATED ROOM:", roomId, userId, socket.id, roomLimits[roomId]);
 
         socket.emit("room-created", {
             roomId,
@@ -232,24 +243,13 @@ io.on("connection", (socket) => {
             roomId,
             hostUserId: roomHostUserIds[roomId] || "",
             maxParticipants: roomLimits[roomId] || 10,
-            isRecording: roomRecordingState[roomId] || false
+            isRecording: roomRecordingState[roomId] || false,
+            meetingTitle: roomTitles[roomId] || "Meeting",
+            meetingType: roomTypes[roomId] || "public"
         });
     });
 
-    socket.on("set-room-limit", ({ roomId, maxParticipants }) => {
-        if (!roomId || !maxParticipants) return;
-        if (socket.data.isHost && roomHosts[roomId] === socket.id) {
-            roomLimits[roomId] = maxParticipants;
-            io.to(roomId).emit("room-info", {
-                roomId,
-                hostUserId: roomHostUserIds[roomId] || "",
-                maxParticipants: roomLimits[roomId],
-                isRecording: roomRecordingState[roomId] || false
-            });
-        }
-    });
-
-    socket.on("join-request", ({ roomId, userId }) => {
+    socket.on("join-request", ({ roomId, userId, password }) => {
         if (!roomId || !userId) return;
 
         socket.data.roomId = roomId;
@@ -261,6 +261,13 @@ io.on("connection", (socket) => {
         if (!hostSocketId) {
             socket.emit("join-rejected", { message: "Host not available" });
             return;
+        }
+
+        if ((roomTypes[roomId] || "public") === "private") {
+            if ((password || "") !== (roomPasswords[roomId] || "")) {
+                socket.emit("join-rejected", { message: "Wrong password" });
+                return;
+            }
         }
 
         const room = io.sockets.adapter.rooms.get(roomId);
@@ -307,7 +314,9 @@ io.on("connection", (socket) => {
         io.to(guestSocketId).emit("join-approved", {
             roomId,
             userId,
-            hostUserId: roomHostUserIds[roomId] || ""
+            hostUserId: roomHostUserIds[roomId] || "",
+            meetingTitle: roomTitles[roomId] || "Meeting",
+            meetingType: roomTypes[roomId] || "public"
         });
 
         io.to(roomId).emit("user-joined", {
@@ -319,7 +328,9 @@ io.on("connection", (socket) => {
             roomId,
             hostUserId: roomHostUserIds[roomId] || "",
             maxParticipants: roomLimits[roomId] || 10,
-            isRecording: roomRecordingState[roomId] || false
+            isRecording: roomRecordingState[roomId] || false,
+            meetingTitle: roomTitles[roomId] || "Meeting",
+            meetingType: roomTypes[roomId] || "public"
         });
     });
 
@@ -340,8 +351,17 @@ io.on("connection", (socket) => {
         if (!roomId || !targetUserId) return;
         if (!socket.data.isHost || roomHosts[roomId] !== socket.id) return;
 
-        const socketId = roomParticipants[roomId]?.[targetUserId];
-        if (!socketId) return;
+        const cleanTarget = String(targetUserId).split("@")[0].split("__")[0];
+        const participants = roomParticipants[roomId] || {};
+
+        const foundEntry = Object.entries(participants).find(([key]) => {
+            const cleanKey = String(key).split("@")[0].split("__")[0];
+            return cleanKey === cleanTarget;
+        });
+
+        if (!foundEntry) return;
+
+        const [, socketId] = foundEntry;
 
         io.to(socketId).emit("kicked", {
             message: "You were removed by host"
@@ -352,7 +372,7 @@ io.on("connection", (socket) => {
         if (!roomId || !userId) return;
 
         io.to(roomId).emit("hand-state-updated", {
-            userId,
+            userId: String(userId).split("@")[0].split("__")[0],
             raised: !!raised
         });
     });
@@ -387,6 +407,9 @@ io.on("connection", (socket) => {
             delete roomLimits[roomId];
             delete roomParticipants[roomId];
             delete roomRecordingState[roomId];
+            delete roomTitles[roomId];
+            delete roomTypes[roomId];
+            delete roomPasswords[roomId];
         }
     });
 
@@ -411,6 +434,9 @@ io.on("connection", (socket) => {
             delete roomLimits[roomId];
             delete roomParticipants[roomId];
             delete roomRecordingState[roomId];
+            delete roomTitles[roomId];
+            delete roomTypes[roomId];
+            delete roomPasswords[roomId];
         }
     });
 });
