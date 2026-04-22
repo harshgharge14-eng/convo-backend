@@ -17,6 +17,7 @@ const {
 const User = require("./User");
 const Message = require("./Message");
 const MeetingHistory = require("./MeetingHistory");
+const Caption = require("./Caption");
 
 const app = express();
 const server = http.createServer(app);
@@ -210,6 +211,56 @@ app.get("/meeting-history", async (req, res) => {
   } catch (error) {
     console.log("History error:", error);
     res.status(500).json({ message: error.message || "Failed to fetch history" });
+  }
+});
+
+app.post("/captions", async (req, res) => {
+  try {
+    const { roomId, speaker, text, isFinal, language } = req.body;
+
+    if (!roomId || !speaker || !text) {
+      return res.status(400).json({ message: "roomId, speaker and text are required" });
+    }
+
+    const caption = await Caption.create({
+      roomId,
+      speaker,
+      text,
+      isFinal: isFinal !== false,
+      language: language || "en",
+    });
+
+    io.to(roomId).emit("caption-added", {
+      roomId: caption.roomId,
+      speaker: caption.speaker,
+      text: caption.text,
+      isFinal: caption.isFinal,
+      language: caption.language,
+      createdAt: caption.createdAt,
+    });
+
+    res.json({ message: "Caption saved" });
+  } catch (error) {
+    console.log("Caption save error:", error);
+    res.status(500).json({ message: error.message || "Failed to save caption" });
+  }
+});
+
+app.get("/captions", async (req, res) => {
+  try {
+    const { roomId } = req.query;
+    if (!roomId) {
+      return res.status(400).json({ message: "roomId is required" });
+    }
+
+    const captions = await Caption.find({ roomId })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    res.json(captions);
+  } catch (error) {
+    console.log("Caption fetch error:", error);
+    res.status(500).json({ message: error.message || "Failed to fetch captions" });
   }
 });
 
@@ -533,7 +584,7 @@ io.on("connection", (socket) => {
     if (!roomParticipants[roomId]) roomParticipants[roomId] = {};
     roomParticipants[roomId][userId] = guestSocketId;
 
-    await addAttendance(roomId, userId);
+    addAttendance(roomId, userId);
 
     io.to(guestSocketId).emit("join-approved", {
       roomId,
