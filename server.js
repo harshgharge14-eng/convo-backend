@@ -18,6 +18,7 @@ const User = require("./User");
 const Message = require("./Message");
 const MeetingHistory = require("./MeetingHistory");
 const Caption = require("./Caption");
+const Summary = require("./Summary");
 
 const app = express();
 const server = http.createServer(app);
@@ -71,6 +72,37 @@ const egressClient = new EgressClient(
 
 function cleanUserId(raw = "") {
   return String(raw).split("@")[0].split("__")[0];
+}
+
+function uniqueLines(lines) {
+  return [...new Set(lines.map((x) => x.trim()).filter(Boolean))];
+}
+
+function buildSummaryFromCaptions(captions) {
+  const finalCaptions = captions.filter((c) => c.isFinal !== false && c.text?.trim());
+
+  const texts = finalCaptions.map((c) => c.text.trim());
+  const uniqueTexts = uniqueLines(texts);
+
+  const summaryText =
+    uniqueTexts.length > 0
+      ? uniqueTexts.slice(0, 8).join(". ") + (uniqueTexts.length > 0 ? "." : "")
+      : "No meaningful captions found for summary.";
+
+  const actionKeywords = ["do", "send", "complete", "submit", "finish", "update", "call", "share", "create", "check"];
+  const actionItems = uniqueLines(
+    uniqueTexts.filter((line) =>
+      actionKeywords.some((k) => line.toLowerCase().includes(k))
+    )
+  ).slice(0, 6);
+
+  const keyPoints = uniqueTexts.slice(0, 6);
+
+  return {
+    summaryText,
+    keyPoints,
+    actionItems,
+  };
 }
 
 async function ensureMeetingHistory(roomId, title, meetingType, hostUserId) {
@@ -264,6 +296,55 @@ app.get("/captions", async (req, res) => {
   }
 });
 
+app.post("/summary/generate", async (req, res) => {
+  try {
+    const { roomId, title } = req.body;
+    if (!roomId) {
+      return res.status(400).json({ message: "roomId is required" });
+    }
+
+    const captions = await Caption.find({ roomId }).sort({ createdAt: 1 }).lean();
+    const generated = buildSummaryFromCaptions(captions);
+
+    const saved = await Summary.findOneAndUpdate(
+      { roomId },
+      {
+        roomId,
+        title: title || "Meeting Summary",
+        summaryText: generated.summaryText,
+        keyPoints: generated.keyPoints,
+        actionItems: generated.actionItems,
+        generatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json(saved);
+  } catch (error) {
+    console.log("Summary generate error:", error);
+    res.status(500).json({ message: error.message || "Failed to generate summary" });
+  }
+});
+
+app.get("/summary", async (req, res) => {
+  try {
+    const { roomId } = req.query;
+    if (!roomId) {
+      return res.status(400).json({ message: "roomId is required" });
+    }
+
+    const summary = await Summary.findOne({ roomId }).lean();
+    if (!summary) {
+      return res.status(404).json({ message: "Summary not found" });
+    }
+
+    res.json(summary);
+  } catch (error) {
+    console.log("Summary fetch error:", error);
+    res.status(500).json({ message: error.message || "Failed to fetch summary" });
+  }
+});
+
 app.post("/recording/start", async (req, res) => {
   try {
     const { roomId } = req.body;
@@ -312,9 +393,7 @@ app.post("/recording/start", async (req, res) => {
   } catch (error) {
     console.log("Start recording error:", error);
     res.status(500).json({
-      message:
-        error.message ||
-        "Failed to start recording. Check LiveKit Egress setup.",
+      message: error.message || "Failed to start recording. Check LiveKit Egress setup.",
     });
   }
 });
@@ -347,9 +426,7 @@ app.post("/recording/stop", async (req, res) => {
   } catch (error) {
     console.log("Stop recording error:", error);
     res.status(500).json({
-      message:
-        error.message ||
-        "Failed to stop recording. Check LiveKit Egress setup.",
+      message: error.message || "Failed to stop recording. Check LiveKit Egress setup.",
     });
   }
 });
