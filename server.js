@@ -80,7 +80,6 @@ function uniqueLines(lines) {
 
 function buildSummaryFromCaptions(captions) {
   const finalCaptions = captions.filter((c) => c.isFinal !== false && c.text?.trim());
-
   const texts = finalCaptions.map((c) => c.text.trim());
   const uniqueTexts = uniqueLines(texts);
 
@@ -89,7 +88,19 @@ function buildSummaryFromCaptions(captions) {
       ? uniqueTexts.slice(0, 8).join(". ") + "."
       : "No meaningful captions found for summary.";
 
-  const actionKeywords = ["do", "send", "complete", "submit", "finish", "update", "call", "share", "create", "check"];
+  const actionKeywords = [
+    "do",
+    "send",
+    "complete",
+    "submit",
+    "finish",
+    "update",
+    "call",
+    "share",
+    "create",
+    "check",
+  ];
+
   const actionItems = uniqueLines(
     uniqueTexts.filter((line) =>
       actionKeywords.some((k) => line.toLowerCase().includes(k))
@@ -285,10 +296,7 @@ app.get("/captions", async (req, res) => {
       return res.status(400).json({ message: "roomId is required" });
     }
 
-    const captions = await Caption.find({ roomId })
-      .sort({ createdAt: 1 })
-      .lean();
-
+    const captions = await Caption.find({ roomId }).sort({ createdAt: 1 }).lean();
     res.json(captions);
   } catch (error) {
     console.log("Caption fetch error:", error);
@@ -364,17 +372,11 @@ app.post("/recording/start", async (req, res) => {
     const safeRoom = roomId.replace(/[^a-zA-Z0-9-_]/g, "_");
     const filepath = `recordings/${safeRoom}-${Date.now()}.mp4`;
 
-    const fileOutput = new EncodedFileOutput({
-      filepath,
-    });
+    const fileOutput = new EncodedFileOutput({ filepath });
 
-    const info = await egressClient.startRoomCompositeEgress(
-      roomId,
-      fileOutput,
-      {
-        layout: "grid",
-      }
-    );
+    const info = await egressClient.startRoomCompositeEgress(roomId, fileOutput, {
+      layout: "grid",
+    });
 
     doc.isRecording = true;
     doc.recordingStatus = "recording";
@@ -594,7 +596,15 @@ io.on("connection", (socket) => {
     socket.data.userId = userId;
     socket.data.isHost = false;
 
-    const hostSocketId = roomHosts[roomId];
+    let hostSocketId = roomHosts[roomId];
+
+    if (!hostSocketId) {
+      const room = io.sockets.adapter.rooms.get(roomId);
+      if (room && room.size > 0) {
+        hostSocketId = [...room][0];
+        roomHosts[roomId] = hostSocketId;
+      }
+    }
 
     if (!hostSocketId) {
       socket.emit("join-rejected", { message: "Host not available" });
@@ -685,6 +695,7 @@ io.on("connection", (socket) => {
 
   socket.on("mute-user", ({ targetUserId, roomId }) => {
     if (!targetUserId || !roomId) return;
+
     const participants = roomParticipants[roomId] || {};
     const cleanTarget = cleanUserId(targetUserId);
 
@@ -694,6 +705,11 @@ io.on("connection", (socket) => {
         break;
       }
     }
+  });
+
+  socket.on("mute-all", ({ roomId }) => {
+    if (!roomId) return;
+    socket.to(roomId).emit("force-mute");
   });
 
   socket.on("kick-user", ({ roomId, targetUserId }) => {
@@ -718,7 +734,7 @@ io.on("connection", (socket) => {
     delete roomParticipants[roomId][realUserId];
 
     io.to(socketId).emit("kicked", {
-      message: "You were removed by host"
+      message: "You were removed by host",
     });
 
     const kickedSocket = io.sockets.sockets.get(socketId);
@@ -728,7 +744,7 @@ io.on("connection", (socket) => {
 
     io.to(roomId).emit("participants-updated", {
       participants: Object.keys(roomParticipants[roomId] || {}),
-      hostUserId: roomHostUserIds[roomId]
+      hostUserId: roomHostUserIds[roomId],
     });
   });
 
@@ -741,7 +757,15 @@ io.on("connection", (socket) => {
 
     io.to(roomId).emit("hand-state-updated", {
       userId: clean,
-      raised: !!raised
+      raised: !!raised,
+    });
+  });
+
+  socket.on("recording-toggle", ({ roomId, recording }) => {
+    if (!roomId) return;
+    roomRecordingState[roomId] = !!recording;
+    io.to(roomId).emit("recording-state", {
+      recording: !!recording,
     });
   });
 
