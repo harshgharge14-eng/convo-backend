@@ -86,7 +86,7 @@ function buildSummaryFromCaptions(captions) {
 
   const summaryText =
     uniqueTexts.length > 0
-      ? uniqueTexts.slice(0, 8).join(". ") + (uniqueTexts.length > 0 ? "." : "")
+      ? uniqueTexts.slice(0, 8).join(". ") + "."
       : "No meaningful captions found for summary.";
 
   const actionKeywords = ["do", "send", "complete", "submit", "finish", "update", "call", "share", "create", "check"];
@@ -431,20 +431,6 @@ app.post("/recording/stop", async (req, res) => {
   }
 });
 
-app.post("/uploadAudio", upload.single("audio"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: "No file uploaded" });
-    }
-
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-    res.json({ url: fileUrl });
-  } catch (err) {
-    console.log("Upload error:", err);
-    res.status(500).json({ message: "Upload failed" });
-  }
-});
-
 app.post("/signup", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -571,6 +557,16 @@ io.on("connection", (socket) => {
       hostUserId: roomHostUserIds[roomId],
     });
 
+    io.to(roomId).emit("room-info", {
+      roomId,
+      hostUserId: roomHostUserIds[roomId] || "",
+      maxParticipants: roomLimits[roomId] || 10,
+      isRecording: roomRecordingState[roomId] || false,
+      meetingTitle: roomTitles[roomId] || "Meeting",
+      meetingType: roomTypes[roomId] || "public",
+      participants: Object.keys(roomParticipants[roomId] || {}),
+    });
+
     io.to(roomId).emit("participants-updated", {
       participants: Object.keys(roomParticipants[roomId]),
       hostUserId: roomHostUserIds[roomId],
@@ -671,9 +667,81 @@ io.on("connection", (socket) => {
       meetingType: roomTypes[roomId] || "public",
     });
 
+    io.to(roomId).emit("room-info", {
+      roomId,
+      hostUserId: roomHostUserIds[roomId] || "",
+      maxParticipants: roomLimits[roomId] || 10,
+      isRecording: roomRecordingState[roomId] || false,
+      meetingTitle: roomTitles[roomId] || "Meeting",
+      meetingType: roomTypes[roomId] || "public",
+      participants: Object.keys(roomParticipants[roomId] || {}),
+    });
+
     io.to(roomId).emit("participants-updated", {
       participants: Object.keys(roomParticipants[roomId] || {}),
       hostUserId: roomHostUserIds[roomId],
+    });
+  });
+
+  socket.on("mute-user", ({ targetUserId, roomId }) => {
+    if (!targetUserId || !roomId) return;
+    const participants = roomParticipants[roomId] || {};
+    const cleanTarget = cleanUserId(targetUserId);
+
+    for (const [userId, socketId] of Object.entries(participants)) {
+      if (cleanUserId(userId) === cleanTarget) {
+        io.to(socketId).emit("force-mute");
+        break;
+      }
+    }
+  });
+
+  socket.on("kick-user", ({ roomId, targetUserId }) => {
+    if (!roomId || !targetUserId) return;
+
+    const cleanTarget = cleanUserId(targetUserId);
+    const participants = roomParticipants[roomId] || {};
+
+    const foundEntry = Object.entries(participants).find(([key]) => {
+      return cleanUserId(key) === cleanTarget;
+    });
+
+    if (!foundEntry) return;
+
+    const [realUserId, socketId] = foundEntry;
+
+    if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
+    if (!blockedUsers[roomId].includes(realUserId)) {
+      blockedUsers[roomId].push(realUserId);
+    }
+
+    delete roomParticipants[roomId][realUserId];
+
+    io.to(socketId).emit("kicked", {
+      message: "You were removed by host"
+    });
+
+    const kickedSocket = io.sockets.sockets.get(socketId);
+    if (kickedSocket) {
+      kickedSocket.leave(roomId);
+    }
+
+    io.to(roomId).emit("participants-updated", {
+      participants: Object.keys(roomParticipants[roomId] || {}),
+      hostUserId: roomHostUserIds[roomId]
+    });
+  });
+
+  socket.on("raise-hand", ({ roomId, userId, raised }) => {
+    if (!roomId || !userId) return;
+
+    const clean = cleanUserId(userId);
+    if (!raisedHands[roomId]) raisedHands[roomId] = {};
+    raisedHands[roomId][clean] = !!raised;
+
+    io.to(roomId).emit("hand-state-updated", {
+      userId: clean,
+      raised: !!raised
     });
   });
 
