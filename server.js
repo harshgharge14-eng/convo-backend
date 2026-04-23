@@ -74,9 +74,213 @@ function cleanUserId(raw = "") {
   return String(raw).split("@")[0].split("__")[0];
 }
 
+function uniqueLines(lines) {
+  return [...new Set(lines.map((x) => x.trim()).filter(Boolean))];
+}
+
+function buildSummaryFromCaptions(captions) {
+  const finalCaptions = captions.filter((c) => c.isFinal !== false && c.text?.trim());
+  const texts = finalCaptions.map((c) => c.text.trim());
+  const uniqueTexts = uniqueLines(texts);
+
+  const summaryText =
+    uniqueTexts.length > 0
+      ? uniqueTexts.slice(0, 8).join(". ") + "."
+      : "No meaningful captions found for summary.";
+
+  const actionKeywords = ["do", "send", "complete", "submit", "finish", "update", "call", "share", "create", "check"];
+  const actionItems = uniqueLines(
+    uniqueTexts.filter((line) =>
+      actionKeywords.some((k) => line.toLowerCase().includes(k))
+    )
+  ).slice(0, 6);
+
+  const keyPoints = uniqueTexts.slice(0, 6);
+
+  return {
+    summaryText,
+    keyPoints,
+    actionItems,
+  };
+}
+
+async function ensureMeetingHistory(roomId, title, meetingType, hostUserId) {
+  let doc = await MeetingHistory.findOne({ roomId });
+  if (!doc) {
+    doc = await MeetingHistory.create({
+      roomId,
+      title: title || "Meeting",
+      meetingType: meetingType || "public",
+      hostUserId,
+      startedAt: new Date(),
+      participants: [hostUserId],
+      attendance: [
+        {
+          userId: hostUserId,
+          joinedAt: new Date(),
+          leftAt: null,
+        },
+      ],
+    });
+  }
+  return doc;
+}
+
+async function addAttendance(roomId, userId) {
+  const doc = await MeetingHistory.findOne({ roomId });
+  if (!doc) return;
+
+  const existsOpen = doc.attendance.some(
+    (a) => cleanUserId(a.userId) === cleanUserId(userId) && !a.leftAt
+  );
+
+  if (!existsOpen) {
+    doc.attendance.push({
+      userId,
+      joinedAt: new Date(),
+      leftAt: null,
+    });
+  }
+
+  if (!doc.participants.some((p) => cleanUserId(p) === cleanUserId(userId))) {
+    doc.participants.push(userId);
+  }
+
+  await doc.save();
+}
+
+async function markAttendanceLeft(roomId, userId) {
+  const doc = await MeetingHistory.findOne({ roomId });
+  if (!doc) return;
+
+  for (let i = doc.attendance.length - 1; i >= 0; i--) {
+    const item = doc.attendance[i];
+    if (cleanUserId(item.userId) === cleanUserId(userId) && !item.leftAt) {
+      item.leftAt = new Date();
+      break;
+    }
+  }
+
+  await doc.save();
+}
+
+async function closeMeeting(roomId) {
+  const doc = await MeetingHistory.findOne({ roomId });
+  if (!doc || doc.endedAt) return;
+
+  const now = new Date();
+  doc.endedAt = now;
+  doc.durationSeconds = Math.max(
+    0,
+    Math.floor((now.getTime() - new Date(doc.startedAt).getTime()) / 1000)
+  );
+
+  doc.attendance.forEach((a) => {
+    if (!a.leftAt) a.leftAt = now;
+  });
+
+  await doc.save();
+}
+
 app.get("/", (req, res) => {
   res.send("Server Running");
 });
+
+/* ---------------- AUTH ROUTES ---------------- */
+
+app.post("/signup", async (req, res) => {
+  try {
+    const email = (req.body.email || "").trim().toLowerCase();
+    const password = (req.body.password || "").trim();
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and Password required" });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.json({ message: "User already exists" });
+    }
+
+    const newUser = new User({ email, password });
+    await newUser.save();
+
+    res.json({ message: "User created successfully" });
+  } catch (error) {
+    console.log("Signup error:", error);
+    res.status(500).json({ message: error.message || "Error creating user" });
+  }
+});
+
+app.post("/login", async (req, res) => {
+  try {
+    const email = (req.body.email || "").trim().toLowerCase();
+    const password = (req.body.password || "").trim();
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and Password required" });
+    }
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.json({ message: "Invalid credentials" });
+    }
+
+    if (user.password !== password) {
+      return res.json({ message: "Invalid credentials" });
+    }
+
+    return res.json({ message: "Login success" });
+  } catch (error) {
+    console.log("Login error:", error);
+    res.status(500).json({ message: error.message || "Error logging in" });
+  }
+});
+
+/* ---------------- CHAT ROUTES ---------------- */
+
+app.post("/sendMessage", async (req, res) => {
+  try {
+    const { email, sender, message, audioUrl, type } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const newMessage = new Message({
+      email,
+      sender,
+      message,
+      audioUrl,
+      type,
+      time: new Date(),
+    });
+
+    await newMessage.save();
+    res.json({ message: "Message sent" });
+  } catch (error) {
+    console.log("Send message error:", error);
+    res.status(500).json({ message: error.message || "Error sending message" });
+  }
+});
+
+app.get("/messages", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const messages = await Message.find({ email }).sort({ time: 1 });
+    res.json(messages);
+  } catch (error) {
+    console.log("Get messages error:", error);
+    res.status(500).json({ message: error.message || "Error fetching messages" });
+  }
+});
+
+/* ---------------- LIVEKIT ---------------- */
 
 app.get("/livekit-token", async (req, res) => {
   try {
@@ -111,6 +315,8 @@ app.get("/livekit-token", async (req, res) => {
     res.status(500).json({ message: error.message || "Failed to generate token" });
   }
 });
+
+/* ---------------- CAPTIONS ---------------- */
 
 app.post("/captions", async (req, res) => {
   try {
@@ -151,10 +357,7 @@ app.get("/captions", async (req, res) => {
       return res.status(400).json({ message: "roomId is required" });
     }
 
-    const captions = await Caption.find({ roomId })
-      .sort({ createdAt: 1 })
-      .lean();
-
+    const captions = await Caption.find({ roomId }).sort({ createdAt: 1 }).lean();
     res.json(captions);
   } catch (error) {
     console.log("Caption fetch error:", error);
@@ -162,10 +365,90 @@ app.get("/captions", async (req, res) => {
   }
 });
 
+/* ---------------- SUMMARY ---------------- */
+
+app.post("/summary/generate", async (req, res) => {
+  try {
+    const { roomId, title } = req.body;
+    if (!roomId) {
+      return res.status(400).json({ message: "roomId is required" });
+    }
+
+    const captions = await Caption.find({ roomId }).sort({ createdAt: 1 }).lean();
+    const generated = buildSummaryFromCaptions(captions);
+
+    const saved = await Summary.findOneAndUpdate(
+      { roomId },
+      {
+        roomId,
+        title: title || "Meeting Summary",
+        summaryText: generated.summaryText,
+        keyPoints: generated.keyPoints,
+        actionItems: generated.actionItems,
+        generatedAt: new Date(),
+      },
+      { upsert: true, new: true }
+    );
+
+    res.json(saved);
+  } catch (error) {
+    console.log("Summary generate error:", error);
+    res.status(500).json({ message: error.message || "Failed to generate summary" });
+  }
+});
+
+app.get("/summary", async (req, res) => {
+  try {
+    const { roomId } = req.query;
+    if (!roomId) {
+      return res.status(400).json({ message: "roomId is required" });
+    }
+
+    const summary = await Summary.findOne({ roomId }).lean();
+    if (!summary) {
+      return res.status(404).json({ message: "Summary not found" });
+    }
+
+    res.json(summary);
+  } catch (error) {
+    console.log("Summary fetch error:", error);
+    res.status(500).json({ message: error.message || "Failed to fetch summary" });
+  }
+});
+
+/* ---------------- HISTORY ---------------- */
+
+app.get("/meeting-history", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const regex = new RegExp("^" + email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+
+    const docs = await MeetingHistory.find({
+      $or: [
+        { hostUserId: regex },
+        { participants: { $elemMatch: { $regex: regex } } },
+      ],
+    })
+      .sort({ startedAt: -1 })
+      .lean();
+
+    res.json(docs);
+  } catch (error) {
+    console.log("History error:", error);
+    res.status(500).json({ message: error.message || "Failed to fetch history" });
+  }
+});
+
+/* ---------------- SOCKETS ---------------- */
+
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
-  socket.on("create-room", ({
+  socket.on("create-room", async ({
     roomId,
     userId,
     maxParticipants,
@@ -193,6 +476,8 @@ io.on("connection", (socket) => {
     socket.data.roomId = roomId;
     socket.data.userId = userId;
     socket.data.isHost = true;
+
+    await ensureMeetingHistory(roomId, meetingTitle, meetingType, userId);
 
     socket.emit("room-created", {
       roomId,
@@ -286,8 +571,17 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
+  socket.on("approve-join", async ({ roomId, guestSocketId, userId }) => {
     if (!roomId || !guestSocketId || !userId) return;
+
+    const room = io.sockets.adapter.rooms.get(roomId);
+    const currentParticipants = room ? room.size : 0;
+    const maxParticipants = roomLimits[roomId] || 10;
+
+    if (currentParticipants >= maxParticipants) {
+      io.to(guestSocketId).emit("join-rejected", { message: "Meeting is full" });
+      return;
+    }
 
     const guestSocket = io.sockets.sockets.get(guestSocketId);
     if (!guestSocket) return;
@@ -300,12 +594,24 @@ io.on("connection", (socket) => {
     if (!roomParticipants[roomId]) roomParticipants[roomId] = {};
     roomParticipants[roomId][userId] = guestSocketId;
 
+    await addAttendance(roomId, userId);
+
     io.to(guestSocketId).emit("join-approved", {
       roomId,
       userId,
       hostUserId: roomHostUserIds[roomId] || "",
       meetingTitle: roomTitles[roomId] || "Meeting",
       meetingType: roomTypes[roomId] || "public",
+    });
+
+    io.to(roomId).emit("room-info", {
+      roomId,
+      hostUserId: roomHostUserIds[roomId] || "",
+      maxParticipants: roomLimits[roomId] || 10,
+      isRecording: roomRecordingState[roomId] || false,
+      meetingTitle: roomTitles[roomId] || "Meeting",
+      meetingType: roomTypes[roomId] || "public",
+      participants: Object.keys(roomParticipants[roomId] || {}),
     });
 
     io.to(roomId).emit("participants-updated", {
@@ -327,9 +633,9 @@ io.on("connection", (socket) => {
     const participants = roomParticipants[roomId] || {};
     const cleanTarget = cleanUserId(targetUserId);
 
-    for (const [userId, socketId] of Object.entries(participants)) {
-      if (cleanUserId(userId) === cleanTarget) {
-        io.to(socketId).emit("force-mute");
+    for (const [joinedUserId, joinedSocketId] of Object.entries(participants)) {
+      if (cleanUserId(joinedUserId) === cleanTarget) {
+        io.to(joinedSocketId).emit("force-mute");
         break;
       }
     }
@@ -339,17 +645,11 @@ io.on("connection", (socket) => {
     if (!roomId) return;
 
     const participants = roomParticipants[roomId] || {};
-    Object.entries(participants).forEach(([userId, socketId]) => {
-      if (userId !== roomHostUserIds[roomId]) {
-        io.to(socketId).emit("force-mute");
+    Object.entries(participants).forEach(([joinedUserId, joinedSocketId]) => {
+      if (cleanUserId(joinedUserId) !== cleanUserId(roomHostUserIds[roomId] || "")) {
+        io.to(joinedSocketId).emit("force-mute");
       }
     });
-  });
-
-  socket.on("recording-toggle", ({ roomId, recording }) => {
-    if (!roomId) return;
-    roomRecordingState[roomId] = !!recording;
-    io.to(roomId).emit("recording-state", { recording: !!recording });
   });
 
   socket.on("kick-user", ({ roomId, targetUserId }) => {
@@ -358,26 +658,31 @@ io.on("connection", (socket) => {
     const cleanTarget = cleanUserId(targetUserId);
     const participants = roomParticipants[roomId] || {};
 
-    const foundEntry = Object.entries(participants).find(([key]) => {
-      return cleanUserId(key) === cleanTarget;
-    });
+    let foundUserId = "";
+    let foundSocketId = "";
 
-    if (!foundEntry) return;
-
-    const [realUserId, socketId] = foundEntry;
-
-    if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
-    if (!blockedUsers[roomId].includes(realUserId)) {
-      blockedUsers[roomId].push(realUserId);
+    for (const [joinedUserId, joinedSocketId] of Object.entries(participants)) {
+      if (cleanUserId(joinedUserId) === cleanTarget) {
+        foundUserId = joinedUserId;
+        foundSocketId = joinedSocketId;
+        break;
+      }
     }
 
-    delete roomParticipants[roomId][realUserId];
+    if (!foundUserId || !foundSocketId) return;
 
-    io.to(socketId).emit("kicked", {
+    if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
+    if (!blockedUsers[roomId].includes(foundUserId)) {
+      blockedUsers[roomId].push(foundUserId);
+    }
+
+    delete roomParticipants[roomId][foundUserId];
+
+    io.to(foundSocketId).emit("kicked", {
       message: "You were removed by host"
     });
 
-    const kickedSocket = io.sockets.sockets.get(socketId);
+    const kickedSocket = io.sockets.sockets.get(foundSocketId);
     if (kickedSocket) {
       kickedSocket.leave(roomId);
     }
@@ -401,7 +706,13 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("leave-room", ({ roomId, userId }) => {
+  socket.on("recording-toggle", ({ roomId, recording }) => {
+    if (!roomId) return;
+    roomRecordingState[roomId] = !!recording;
+    io.to(roomId).emit("recording-state", { recording: !!recording });
+  });
+
+  socket.on("leave-room", async ({ roomId, userId }) => {
     if (!roomId || !userId) return;
 
     socket.leave(roomId);
@@ -410,12 +721,16 @@ io.on("connection", (socket) => {
       delete roomParticipants[roomId][userId];
     }
 
+    await markAttendanceLeft(roomId, userId);
+
     io.to(roomId).emit("participants-updated", {
       participants: Object.keys(roomParticipants[roomId] || {}),
       hostUserId: roomHostUserIds[roomId] || "",
     });
 
     if (socket.data.isHost && roomHosts[roomId] === socket.id) {
+      await closeMeeting(roomId);
+
       delete roomHosts[roomId];
       delete roomHostUserIds[roomId];
       delete roomLimits[roomId];
@@ -429,7 +744,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     const roomId = socket.data.roomId;
     const userId = socket.data.userId;
 
@@ -437,7 +752,9 @@ io.on("connection", (socket) => {
       delete roomParticipants[roomId][userId];
     }
 
-    if (roomId) {
+    if (roomId && userId) {
+      await markAttendanceLeft(roomId, userId);
+
       io.to(roomId).emit("participants-updated", {
         participants: Object.keys(roomParticipants[roomId] || {}),
         hostUserId: roomHostUserIds[roomId] || "",
@@ -445,6 +762,8 @@ io.on("connection", (socket) => {
     }
 
     if (roomId && socket.data.isHost && roomHosts[roomId] === socket.id) {
+      await closeMeeting(roomId);
+
       delete roomHosts[roomId];
       delete roomHostUserIds[roomId];
       delete roomLimits[roomId];
