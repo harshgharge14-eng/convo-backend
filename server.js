@@ -13,6 +13,7 @@ const { AccessToken } = require("livekit-server-sdk");
 const User = require("./User");
 const Message = require("./Message");
 const Caption = require("./Caption");
+const MeetingHistory = require("./MeetingHistory");
 
 const app = express();
 const server = http.createServer(app);
@@ -265,12 +266,33 @@ app.get("/captions", async (req, res) => {
     }
 });
 
+/* MEETING HISTORY */
+
+app.get("/meeting-history", async (req, res) => {
+    try {
+        const { email } = req.query;
+
+        if (!email) {
+            return res.status(400).json({ message: "Email is required" });
+        }
+
+        const history = await MeetingHistory.find({
+            participants: email
+        }).sort({ startedAt: -1 });
+
+        res.json(history);
+    } catch (error) {
+        console.log("Meeting history error:", error);
+        res.status(500).json({ message: "Failed to fetch history" });
+    }
+});
+
 /* SOCKET */
 
 io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
 
-    socket.on("create-room", ({ roomId, userId, maxParticipants, meetingTitle, meetingType, meetingPassword }) => {
+    socket.on("create-room", async ({ roomId, userId, maxParticipants, meetingTitle, meetingType, meetingPassword }) => {
         if (!roomId || !userId) return;
 
         roomHosts[roomId] = socket.id;
@@ -291,6 +313,18 @@ io.on("connection", (socket) => {
         socket.data.roomId = roomId;
         socket.data.userId = userId;
         socket.data.isHost = true;
+
+        await MeetingHistory.findOneAndUpdate(
+            { roomId },
+            {
+                roomId,
+                title: meetingTitle || "Meeting",
+                hostUserId: userId,
+                $addToSet: { participants: userId },
+                startedAt: new Date()
+            },
+            { upsert: true, new: true }
+        );
 
         socket.emit("room-created", {
             roomId,
@@ -376,7 +410,7 @@ io.on("connection", (socket) => {
         });
     });
 
-    socket.on("approve-join", ({ roomId, guestSocketId, userId }) => {
+    socket.on("approve-join", async ({ roomId, guestSocketId, userId }) => {
         if (!roomId || !guestSocketId || !userId) return;
 
         const guestSocket = io.sockets.sockets.get(guestSocketId);
@@ -389,6 +423,13 @@ io.on("connection", (socket) => {
 
         if (!roomParticipants[roomId]) roomParticipants[roomId] = {};
         roomParticipants[roomId][userId] = guestSocketId;
+
+        await MeetingHistory.findOneAndUpdate(
+            { roomId },
+            {
+                $addToSet: { participants: userId }
+            }
+        );
 
         io.to(guestSocketId).emit("join-approved", {
             roomId,
