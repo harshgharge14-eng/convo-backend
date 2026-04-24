@@ -69,6 +69,34 @@ app.get("/", (req, res) => {
     res.send("Server Running");
 });
 
+app.get("/join", (req, res) => {
+    const room = req.query.room || "";
+    const title = req.query.title || "Meeting";
+
+    const deepLink =
+        `convo://join?room=${encodeURIComponent(room)}&title=${encodeURIComponent(title)}`;
+
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Join Convo Meeting</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <script>
+                setTimeout(function () {
+                    window.location.href = "${deepLink}";
+                }, 500);
+            </script>
+        </head>
+        <body style="font-family: Arial; text-align: center; padding: 30px;">
+            <h2>Opening Convo...</h2>
+            <p>If the app does not open automatically, tap below:</p>
+            <a href="${deepLink}" style="font-size: 22px;">Join Meeting</a>
+        </body>
+        </html>
+    `);
+});
+
 /* AUTH */
 
 app.post("/signup", async (req, res) => {
