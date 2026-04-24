@@ -42,12 +42,8 @@ if (!fs.existsSync("uploads")) {
 }
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, "uploads/");
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    }
+    destination: (req, file, cb) => cb(null, "uploads/"),
+    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
 
 const upload = multer({ storage });
@@ -451,33 +447,42 @@ io.on("connection", (socket) => {
         const cleanTarget = cleanUserId(targetUserId);
         const participants = roomParticipants[roomId] || {};
 
-        const foundEntry = Object.entries(participants).find(([key]) => {
-            return cleanUserId(key) === cleanTarget;
-        });
+        let foundUserId = "";
+        let foundSocketId = "";
 
-        if (!foundEntry) return;
-
-        const [realUserId, socketId] = foundEntry;
-
-        if (!blockedUsers[roomId]) blockedUsers[roomId] = [];
-        if (!blockedUsers[roomId].includes(realUserId)) {
-            blockedUsers[roomId].push(realUserId);
+        for (const [joinedUserId, joinedSocketId] of Object.entries(participants)) {
+            if (cleanUserId(joinedUserId) === cleanTarget) {
+                foundUserId = joinedUserId;
+                foundSocketId = joinedSocketId;
+                break;
+            }
         }
 
-        delete roomParticipants[roomId][realUserId];
+        if (!foundUserId || !foundSocketId) return;
 
-        io.to(socketId).emit("kicked", {
+        if (!blockedUsers[roomId]) {
+            blockedUsers[roomId] = [];
+        }
+
+        if (!blockedUsers[roomId].includes(foundUserId)) {
+            blockedUsers[roomId].push(foundUserId);
+        }
+
+        delete roomParticipants[roomId][foundUserId];
+
+        io.to(foundSocketId).emit("kicked", {
             message: "You were removed by host"
         });
 
-        const kickedSocket = io.sockets.sockets.get(socketId);
+        const kickedSocket = io.sockets.sockets.get(foundSocketId);
+
         if (kickedSocket) {
             kickedSocket.leave(roomId);
         }
 
         io.to(roomId).emit("participants-updated", {
             participants: Object.keys(roomParticipants[roomId] || {}),
-            hostUserId: roomHostUserIds[roomId]
+            hostUserId: roomHostUserIds[roomId] || ""
         });
     });
 
@@ -485,7 +490,11 @@ io.on("connection", (socket) => {
         if (!roomId || !userId) return;
 
         const clean = cleanUserId(userId);
-        if (!raisedHands[roomId]) raisedHands[roomId] = {};
+
+        if (!raisedHands[roomId]) {
+            raisedHands[roomId] = {};
+        }
+
         raisedHands[roomId][clean] = !!raised;
 
         io.to(roomId).emit("hand-state-updated", {
