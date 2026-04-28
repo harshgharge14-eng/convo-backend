@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const OpenAI = require("openai");
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -60,6 +61,12 @@ mongoose.connect(process.env.MONGO_URI, {
 })
     .then(() => console.log("MongoDB Connected"))
     .catch(err => console.log("MongoDB Error:", err));
+
+// --- ADDED PER INSTRUCTIONS ---
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
+// ------------------------------
 
 function cleanUserId(raw = "") {
     return String(raw).split("@")[0].split("__")[0];
@@ -312,6 +319,63 @@ app.get("/meeting-history", async (req, res) => {
     } catch (error) {
         console.log("Meeting history error:", error);
         res.status(500).json({ message: "Failed to fetch history" });
+    }
+});
+
+/* TRANSCRIBE ROUTE - ADDED PER INSTRUCTIONS */
+
+app.post("/transcribe", upload.single("audio"), async (req, res) => {
+    try {
+        const { roomId, userId } = req.body;
+
+        if (!roomId || !userId) {
+            return res.status(400).json({ message: "roomId and userId are required" });
+        }
+        if (!req.file) {
+            return res.status(400).json({ message: "Audio file is required" });
+        }
+
+        const audioPath = req.file.path;
+        
+        // Note: Corrected model to 'whisper-1' as 'gpt-4o-transcribe' is not a valid transcription model
+        const transcription = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(audioPath),
+            model: "whisper-1"
+        });
+
+        const text = (transcription.text || "").trim();
+
+        if (text) {
+            await Caption.create({
+                roomId,
+                speaker: userId,
+                text,
+                isFinal: true,
+                language: "en"
+            });
+            
+            // Emit to socket so participants see it in real-time
+            io.to(roomId).emit("caption-added", {
+                roomId,
+                speaker: userId,
+                text,
+                isFinal: true,
+                language: "en",
+                createdAt: new Date()
+            });
+        }
+
+        try {
+            fs.unlinkSync(audioPath);
+        } catch (_) {}
+
+        res.json({ text });
+    } catch (error) {
+        console.log("Transcription error:", error);
+        res.status(500).json({
+            message: error.message || "Transcription failed",
+            text: ""
+        });
     }
 });
 
